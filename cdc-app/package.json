@@ -1,0 +1,13 @@
+{
+  "name": "cdc-app",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "aws-sdk": "^2.1692.0",
+    "mongodb": "^6.18.0",
+    "parquetjs-lite": "^0.8.7"
+  }
+}
