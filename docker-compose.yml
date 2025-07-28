@@ -57,7 +57,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-
   cdc-app:
     build: ./cdc-app
     container_name: cdc-app
@@ -67,6 +66,7 @@ services:
     environment:
       - MONGO_URI=mongodb://mongo1:27017,mongo2:27018,mongo3:27019/?replicaSet=rs0
       - MONGO_DB=cdcdb
+      - LOKI_URL=http://loki:3100/loki/api/v1/push
       - MINIO_ENDPOINT=http://minio:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
@@ -83,31 +83,42 @@ services:
         reservations:
           memory: 256M
 
-  trino:
-    image: trinodb/trino:latest
-    container_name: trino
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: loki
     ports:
-      - "8080:8080"
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
     volumes:
-      - ./trino/etc:/etc/trino
-      - ./trino_data:/var/trino/data
-    depends_on:
-      - minio
-
-  metabase:
-    image: metabase/metabase:latest
-    container_name: metabase
-    ports:
-      - "3000:3000"
-    depends_on:
-      - trino
-    environment:
-      MB_DB_TYPE: h2
-      MB_JETTY_PORT: 3000
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - ./data/loki:/loki
     restart: unless-stopped
 
+  promtail:
+    image: grafana/promtail:2.9.4
+    container_name: promtail
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/log:/var/log:ro
+      - ./promtail-config.yaml:/etc/promtail/config.yml
+    command: -config.file=/etc/promtail/config.yml
+    restart: unless-stopped
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:10.3.1
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-storage:/var/lib/grafana
+      - ./provisioning/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - loki
+    restart: unless-stopped
 
 volumes:
   mongo1_data:
@@ -116,4 +127,4 @@ volumes:
   mongo1_config:
   mongo2_config:
   mongo3_config:
-  trino_data:
+  grafana-storage:

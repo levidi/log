@@ -1,58 +1,51 @@
 const { MongoClient } = require("mongodb");
-const AWS = require("aws-sdk");
-const parquet = require("parquetjs-lite");
-const fs = require("fs");
+const axios = require("axios");
+
+// IMPORTAÇÃO DO SIMULADOR DE LOGS
+require("./create-log");
 
 const MONGO_URI = process.env.MONGO_URI || "mongodb://userflow:passwordflow@mongo:27017/cdcdb?authSource=admin&replicaSet=rs0";
 const MONGO_DB = process.env.MONGO_DB || "cdcdb";
-const BUCKET_NAME = "logs";
-
-AWS.config.update({
-  accessKeyId: process.env.MINIO_ACCESS_KEY,
-  secretAccessKey: process.env.MINIO_SECRET_KEY,
-  endpoint: process.env.MINIO_ENDPOINT,
-  s3ForcePathStyle: true,
-  signatureVersion: "v4",
-  region: process.env.REGION,
-});
-
-const s3 = new AWS.S3();
+const LOKI_URL = process.env.LOKI_URL || "http://loki:3100/loki/api/v1/push";
 
 let buffer = [];
-let fileCounter = 0;
+let bufferSize = 0;
+const MAX_BUFFER_SIZE = 100;
+const FLUSH_INTERVAL_MS = 5000;
 
-async function uploadBufferIfNeeded() {
-  if (buffer.length === 0) return;
+function getNanoTimestamp(date) {
+  return `${date.getTime()}000000`; // milissegundos para nanosegundos
+}
 
-  const schema = new parquet.ParquetSchema({
-    _id: { type: "UTF8" },
-    name: { type: "UTF8" },
-    timestamp: { type: "TIMESTAMP_MILLIS" },
-  });
+async function sendLogsToLoki(logs) {
+  if (logs.length === 0) return;
 
-  const filePath = `/tmp/cdc-logs-${fileCounter}.parquet`;
-  const writer = await parquet.ParquetWriter.openFile(schema, filePath);
+  const streams = [
+    {
+      stream: { job: "cdc-app", source: "cdc" },
+      values: logs.map(log => [
+        getNanoTimestamp(new Date(log.timestamp)),
+        JSON.stringify(log)
+      ])
+    },
+  ];
 
-  for (const row of buffer) {
-    await writer.appendRow(row);
+  try {
+    await axios.post(LOKI_URL, { streams });
+    console.log(`Sent ${logs.length} logs to Loki`);
+  } catch (error) {
+    console.error("Error sending logs to Loki:", error.message || error);
   }
+}
 
-  await writer.close();
+async function flushBuffer() {
+  if (bufferSize === 0) return;
 
-  const fileContent = fs.readFileSync(filePath);
-  const objectName = `cdc-logs-${new Date().toISOString()}.parquet`;
-
-  await s3.putObject({
-    Bucket: BUCKET_NAME,
-    Key: objectName,
-    Body: fileContent,
-  }).promise();
-
-  console.log(`Parquet file uploaded to MinIO as ${objectName}`);
-
-  fs.unlinkSync(filePath);
+  const toSend = buffer;
   buffer = [];
-  fileCounter++;
+  bufferSize = 0;
+
+  await sendLogsToLoki(toSend);
 }
 
 async function main() {
@@ -74,17 +67,22 @@ async function main() {
 
       buffer.push({
         _id: doc._id.toString(),
-        name: doc.user || "",
-        timestamp: new Date(doc.timestamp),
+        user: doc.user || "",
+        timestamp: doc.timestamp || new Date().toISOString(),
+
       });
+      bufferSize++;
+
+      if (bufferSize >= MAX_BUFFER_SIZE) {
+        await flushBuffer();
+      }
     });
 
-    // Checa a cada 5 segundos se há dados para enviar
-    setInterval(uploadBufferIfNeeded, 5000);
+    setInterval(flushBuffer, FLUSH_INTERVAL_MS);
 
     process.on("SIGINT", async () => {
-      console.log("SIGINT received. Cleaning up...");
-      await uploadBufferIfNeeded(); // envia o que restou
+      console.log("SIGINT received. Flushing logs and closing Mongo client...");
+      await flushBuffer();
       await client.close();
       process.exit(0);
     });

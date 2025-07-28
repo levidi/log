@@ -2,6 +2,7 @@
 
 insert:
 	docker exec -it cdc-app node insert.js
+
 up:
 	docker compose up -d --build
 
