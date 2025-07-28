@@ -1,6 +1,0 @@
-exit
-db.events.find({})
-show collections
-use cdcdb
-show databases;
-exit
